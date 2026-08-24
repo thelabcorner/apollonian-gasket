@@ -1,63 +1,119 @@
 # Performance Architecture
 
-The optimized explorer was rebuilt around one principle: interaction should not scale with DOM node count.
+The explorer is built around one principle: interaction should not scale with DOM node count or CPU path construction.
 
-## Primary bottleneck
+## Evolution
 
-The original renderer regenerated the fractal during interaction and then destroyed and recreated thousands of SVG `<circle>` nodes. At populated views, the browser spent substantial time on DOM mutation, style work, paint invalidation, and garbage collection.
+The rendering architecture has progressed through three stages:
 
-The current implementation renders through Canvas 2D and keeps geometry in fixed typed arrays.
+```text
+SVG DOM circles
+    -> Canvas 2D bounded batches
+        -> WebGL2 analytic instancing
+```
+
+Each stage removes a different class of browser overhead.
+
+## Current hot path
+
+The current default backend uses WebGL2. Circle generation stays on the CPU in reusable typed arrays. Rasterization moves to the GPU.
+
+For a cached interaction frame, the work is approximately:
+
+```text
+input
+  -> update camera
+  -> upload a few uniforms
+  -> one instanced gasket draw
+  -> optional bounds draw
+```
+
+No recursive geometry generation is required when the overscanned cache still contains the viewport.
 
 ## Optimization stack
 
-### 1. Canvas instead of per-circle SVG DOM
+### 1. WebGL2 analytic circle renderer
 
-Visible circles are rasterized through Canvas rather than represented as individual DOM elements. This removes thousands of node creates and deletes from the frame-critical path.
+Every visible circle is represented by one instance containing center, radius, and recursion depth. A shared four-vertex quad is expanded in the vertex shader. The fragment shader evaluates radial distance to create the circle edge analytically.
 
-### 2. Bounded draw micro-batches
+This avoids CPU arc construction and avoids tessellating circles into many geometry vertices.
 
-A first Canvas pass used very large multi-thousand-circle paths. That can create expensive tessellation work in browser or software-rendering paths. The current renderer uses bounded 96-circle batches so each submission has predictable complexity.
+### 2. GPU instancing
 
-### 3. Typed-array geometry buffers
+The visible gasket is submitted with `drawArraysInstanced` rather than a JavaScript draw call per circle.
 
-Circle center, radius, and recursion depth are written into reusable typed arrays:
+For `N` visible circles, the GPU receives:
+
+```text
+4 shared quad vertices
+N compact instances
+1 instanced gasket draw submission
+```
+
+The bounding circle is a second lightweight draw only when enabled.
+
+### 3. Shader antialiasing
+
+Circle edges use derivative-based antialiasing with `fwidth`. Raster quality therefore does not depend on polygon segment count.
+
+### 4. Analytic outline mode
+
+Outline width is calculated directly from the circle's screen-space radius in the shader. The previous Canvas renderer grouped widths into buckets to preserve batching. WebGL does not need that approximation.
+
+### 5. Relative-origin GPU coordinates
+
+Canonical geometry remains in Float64 CPU arrays. Before upload, each center is converted to a position relative to the geometry cache origin and then stored as Float32.
+
+This avoids sending large absolute world coordinates into Float32 attributes and improves precision during deep zoom.
+
+### 6. Geometry cache with overscan
+
+Interaction geometry is generated beyond the visible viewport. If the next viewport remains inside that region and zoom remains within a bounded ratio, the generator is skipped.
+
+Small pans and short zoom bursts can therefore reuse the same GPU instance buffer.
+
+### 7. Render-only UI state
+
+Changing palette, fill mode, or bounding-circle visibility does not invalidate geometry.
+
+Palette changes update shader color uniforms. Fill mode changes one shader mode uniform. Bounds changes only whether the additional analytic bounds draw occurs.
+
+### 8. Typed-array generator
+
+Circle center, radius, and recursion depth use fixed reusable typed arrays:
 
 - `Float64Array` for `cx`, `cy`, and `r`
 - `Uint8Array` for recursion depth
 
-This avoids allocating a fresh JavaScript object for every visible circle on every redraw.
+No JavaScript circle objects are allocated during generation.
 
-### 4. Cheaper candidate comparison
+### 9. Squared-distance candidate comparison
 
-Candidate selection only requires relative distance comparison. Squared distances are compared directly, avoiding unnecessary square roots and `Math.hypot` calls in the recursive hot path.
+Candidate selection only needs relative distance. The recursive generator compares squared distances directly instead of computing two square roots.
 
-### 5. Screen-space overscan
+### 10. Screen-space pruning
 
-Culling uses screen-relative margins rather than a fixed mathematical-unit margin. A fixed world-space margin becomes disproportionately expensive at deep zoom because it maps to an enormous number of pixels.
+The recursion threshold is derived from projected circle radius. Geometry that cannot materially affect the current viewport is rejected before it reaches the renderer.
 
-### 6. Progressive interaction LOD
+### 11. Progressive interaction LOD
 
-During active wheel, drag, and pinch input, the generator uses a lower visible-circle budget. Full detail is restored shortly after interaction settles. This reduces latency when responsiveness matters most while preserving the detailed final view.
+Active interaction uses a slightly higher minimum projected radius and a bounded circle budget. Full detail is regenerated shortly after input settles.
 
-### 7. Event-driven frames
+### 12. Event-driven frames
 
-The page does not run a permanent animation loop while idle. Rendering is requested when state changes, and repeated input events are coalesced into a single animation-frame callback.
+There is no permanent animation loop. Input events are coalesced into one `requestAnimationFrame`, and the page is idle when nothing changes.
 
-### 8. Precomputed color lookup
+### 13. Controlled device pixel ratio
 
-Palette interpolation is performed outside the per-circle rendering loop. Render-time color selection is a depth lookup instead of repeated string parsing and interpolation.
+WebGL rendering is capped at a practical DPR to avoid multiplying fragment work on very high-density displays without proportional visual benefit. The Canvas fallback uses a slightly lower cap.
 
-### 9. Controlled device pixel ratio
+### 14. Canvas 2D fallback
 
-Canvas raster density is capped to avoid multiplying pixel work on very high-DPI displays without a proportional visual benefit.
+If WebGL2 context creation, shader compilation, or program linking fails, the explorer initializes the optimized Canvas 2D renderer. The fallback retains typed-array geometry, bounded path batches, progressive LOD, and event-driven frames.
 
-### 10. Reduced compositor pressure
+## CPU generator benchmark
 
-Persistent backdrop blur was removed from HUD surfaces over the moving fractal. Continuously blurring changing content can be disproportionately expensive during interaction.
-
-## Generator benchmark
-
-Representative 1920 × 1080 measurements:
+Representative 1920 × 1080 measurements from the optimized generator work:
 
 | Zoom | Visible circles | Original | Optimized | Speedup |
 | ---: | ---: | ---: | ---: | ---: |
@@ -66,27 +122,38 @@ Representative 1920 × 1080 measurements:
 | 5× | 3,056 | 1.702 ms | 0.690 ms | 2.47× |
 | 10× | 3,708 | 2.123 ms | 0.807 ms | 2.63× |
 
-These numbers isolate geometry generation. They do not include the much larger renderer-side reduction from removing thousands of SVG DOM operations.
+These figures measure geometry generation only. They predate the WebGL2 renderer and should not be interpreted as GPU frame-time benchmarks.
 
-## Correctness checks
+## WebGL validation status
 
-The optimized generator was compared against the original implementation using the same representative views.
+JavaScript syntax validation passes for both the renderer and application modules.
 
-- Circle counts matched.
-- Recursion depths matched.
-- Coordinate differences were limited to floating-point epsilon, approximately `1e-16`.
-- The repaired standalone renderer was exercised in Chromium with an initial 2,047-circle, depth-32 render and no page or console errors.
-- Wheel zoom produced a new rendered state and updated runtime statistics.
+A bounded headless Chromium attempt in the development container could not initialize EGL, so no local GPU timing claim is being made from that environment. The process was terminated by a hard timeout and was not retried. Runtime code keeps the Canvas 2D fallback for devices where WebGL2 is unavailable.
 
-## Runtime limits
-
-The implementation uses explicit budgets to prevent a single frame from expanding without bound:
+## Runtime budgets
 
 ```text
-MAX_DEPTH           = 55
-MAX_CIRCLES         = 14,000
-INTERACTIVE_CIRCLES = 6,500
-DRAW_BATCH          = 96
+MAX_DEPTH              = 55
+MAX_CIRCLES            = 14,000
+INTERACTIVE_CIRCLES    = 9,000
+INTERACTIVE_MIN_RADIUS = 0.68 px
+FULL_MIN_RADIUS        = 0.35 px
+INTERACTIVE_OVERSCAN   = 64 px
 ```
 
-These are engineering limits, not mathematical limits of the gasket. They keep the interactive explorer responsive while preserving the visual impression of unbounded recursive detail.
+These are engineering limits, not mathematical limits of the gasket.
+
+## Why the generator remains on the CPU
+
+At the current visible-circle budget, the generator is already inexpensive compared with the original renderer. It also contains irregular recursive branching, candidate selection, viewport pruning, and early termination.
+
+Moving that logic to GPU compute would require a substantially different algorithm, likely breadth-first work queues or multi-pass buffers. WebGPU could support that architecture, but it would add complexity and compatibility cost before the current CPU generator has been demonstrated to be the dominant remaining bottleneck.
+
+The current split is therefore intentional:
+
+```text
+CPU: topology, recursion, culling, high-precision geometry
+GPU: projection, circle expansion, antialiasing, fill, outline, color
+```
+
+That division targets the expensive rendering work while keeping the mathematically sensitive portion simple and auditable.
