@@ -4,15 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#020617" />
-  <meta name="description" content="A high-performance interactive Apollonian gasket explorer with infinite zoom, Canvas rendering, and zero runtime dependencies." />
+  <meta name="description" content="A GPU-accelerated interactive Apollonian gasket explorer with infinite zoom, WebGL2 rendering, and zero runtime dependencies." />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="Apollonian Gasket | Infinite Zoom Fractal Explorer" />
-  <meta property="og:description" content="Explore an Apollonian gasket at extreme scale with a renderer engineered for smooth interaction." />
+  <meta property="og:description" content="Explore an Apollonian gasket at extreme scale with a GPU-accelerated renderer engineered for smooth interaction." />
   <meta property="og:url" content="https://thelabcorner.github.io/apollonian-gasket/" />
   <meta property="og:image" content="https://thelabcorner.github.io/apollonian-gasket/assets/preview.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Apollonian Gasket | Infinite Zoom Fractal Explorer" />
-  <meta name="twitter:description" content="A high-performance interactive Apollonian gasket explorer." />
+  <meta name="twitter:description" content="A GPU-accelerated interactive Apollonian gasket explorer." />
   <meta name="twitter:image" content="https://thelabcorner.github.io/apollonian-gasket/assets/preview.png" />
   <title>Apollonian Gasket | Infinite Zoom Fractal Explorer</title>
   <link rel="stylesheet" href="./src/styles.css" />
@@ -27,6 +27,7 @@
     <div class="stat"><span class="k">Circles</span><span class="v" id="circleStat">0</span></div>
     <div class="stat"><span class="k">Depth</span><span class="v" id="depthStat">0</span></div>
     <div class="stat"><span class="k">Zoom</span><span class="v" id="zoomStat">0.9×</span></div>
+    <div class="stat"><span class="k">Renderer</span><span class="v renderer-v" id="rendererStat">...</span></div>
   </div>
   <div class="ui center-dot"></div>
   <div class="ui hint" id="hint">SCROLL TO ZOOM · DRAG TO PAN</div>
@@ -53,12 +54,13 @@
       <div class="help-row"><kbd>F</kbd><span>Toggle circle fill</span></div>
       <div class="help-row"><kbd>B</kbd><span>Toggle bounding circle</span></div>
       <div class="help-row"><kbd>?</kbd><span>Toggle help</span></div>
-      <p class="about">An Apollonian gasket is formed by recursively inscribing circles tangent to three others using Descartes' Circle Theorem. This build uses a typed-array generator and Canvas batching instead of thousands of live SVG DOM nodes.</p>
+      <p class="about">An Apollonian gasket is formed by recursively inscribing circles tangent to three others using Descartes' Circle Theorem. This build renders analytically rasterized circle instances through WebGL2, with a Canvas 2D fallback when GPU rendering is unavailable.</p>
       <a class="source-link" href="https://github.com/thelabcorner/apollonian-gasket" target="_blank" rel="noreferrer">View source on GitHub</a>
       <button class="close" id="closeHelp">Got It</button>
     </div>
   </div>
 </div>
+<script src="./src/renderer.js"></script>
 <script src="./src/app.js"></script>
 </body>
 </html>
